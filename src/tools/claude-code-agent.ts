@@ -134,13 +134,14 @@ Remember: Add to notebooks/research.ipynb. Use tqdm for progress. Print stage up
         if (message.type === "assistant") {
           const content = message.message.content;
           for (const block of content) {
-            if (block.type === "text") {
-              logs.push(block.text);
+            // Only capture text content, ignore tool_use blocks to prevent ID leakage
+            if (block.type === "text" && block.text) {
+              // Strip any tool IDs that might be in the text
+              const cleanText = block.text.replace(/srvtoolu_[a-zA-Z0-9]+/g, "[tool]");
+              logs.push(cleanText);
             }
             if (block.type === "tool_use") {
-              logs.push(`🔧 Tool: ${block.name}`);
-              
-              // Track file changes
+              // Track file changes without storing tool IDs
               if (["Write", "Edit", "NotebookEdit"].includes(block.name)) {
                 const input = block.input as Record<string, unknown>;
                 const filePath = (input.file_path || input.notebook_path || input.path) as string | undefined;
@@ -154,7 +155,8 @@ Remember: Add to notebooks/research.ipynb. Use tqdm for progress. Print stage up
 
         if (message.type === "result") {
           if (message.subtype === "success") {
-            finalResult = message.result;
+            // Clean the result of any internal tool IDs
+            finalResult = message.result.replace(/srvtoolu_[a-zA-Z0-9]+/g, "[internal-tool]");
             console.log(`✅ Claude Code done. Cost: $${message.total_cost_usd.toFixed(4)}`);
             console.log(`📊 Turns: ${message.num_turns}, Duration: ${(message.duration_ms / 1000).toFixed(1)}s`);
           } else {
@@ -165,10 +167,13 @@ Remember: Add to notebooks/research.ipynb. Use tqdm for progress. Print stage up
 
       console.log(`📁 Files: ${changedFiles.length > 0 ? changedFiles.join(", ") : "none"}`);
       
+      // Return clean result without any tool IDs that could confuse the outer agent
+      const cleanLogs = logs.map(log => log.replace(/toolu_[a-zA-Z0-9]+/g, "[tool]"));
+      
       return {
-        summary: finalResult || "Completed",
+        summary: finalResult || "Completed successfully",
         changedFiles,
-        logs,
+        logs: cleanLogs,
         success: true,
       };
     } catch (error) {
