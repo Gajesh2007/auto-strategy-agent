@@ -114,6 +114,7 @@ Examples:
       const thread = codex.startThread({
         workingDirectory,
         skipGitRepoCheck: true,
+        sandboxMode: "workspace-write",  // Allow file modifications
       });
 
       const fullPrompt = `${CODEX_SYSTEM_CONTEXT}
