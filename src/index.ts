@@ -1,15 +1,19 @@
 import { openai } from "@ai-sdk/openai";
-import { generateText, streamText, stepCountIs } from "ai";
-import { env } from "./config/env.js";
-import { fetchMarketDataTool, codexEditTool } from "./tools/index.js";
+import { anthropic } from "@ai-sdk/anthropic";
+import { generateText, stepCountIs } from "ai";
+import { env, type ModelProvider } from "./config/env.js";
+import { fetchMarketDataTool, codexEditTool, claudeCodeEditTool } from "./tools/index.js";
 
 console.log("🚀 Auto Strategy Agent starting...");
 console.log(`📁 Data dir: ${env.DATA_DIR}`);
 console.log(`🕐 Current time: ${new Date().toISOString()}`);
+console.log(`🤖 Provider: ${env.MODEL_PROVIDER}`);
 
-function getSystemPrompt(): string {
+function getSystemPrompt(provider: ModelProvider): string {
   const now = new Date();
   const marketOpen = now.getUTCHours() >= 13 && now.getUTCHours() < 21;
+  const codeAgent = provider === "anthropic" ? "Claude Code" : "Codex";
+  const codeToolName = provider === "anthropic" ? "claude_code_edit" : "codex_edit";
   
   return `You are a quantitative research and trading agent with GPU compute available.
 
@@ -20,7 +24,7 @@ function getSystemPrompt(): string {
 
 ## Your Role
 You are the RESEARCH BRAIN. You decide WHAT to investigate and WHEN to trade.
-Codex is your engineering brain - it implements ML models in the notebook.
+${codeAgent} is your engineering brain - it implements ML models in the notebook.
 
 ## Tools
 
@@ -31,8 +35,8 @@ Get historical OHLCV from Polygon.io. Saves to ./data/
 Search web for market news, macro context, earnings, Fed decisions, regime info.
 Use this actively to understand current market conditions.
 
-### codex_edit
-Delegate ML/coding work to Codex. It works in quant-lab/notebooks/research.ipynb.
+### ${codeToolName}
+Delegate ML/coding work to ${codeAgent}. It works in quant-lab/notebooks/research.ipynb.
 - GPU available - train real models (XGBoost, LightGBM, neural nets, transformers)
 - Can install any packages
 - Add progress bars (tqdm) for long-running jobs
@@ -62,39 +66,69 @@ After training a model, analyze:
 
 1. **Context** - Use web_search to understand current market conditions
 2. **Data** - Fetch historical data with fetch_market_data
-3. **Build** - Delegate ML pipeline to Codex
+3. **Build** - Delegate ML pipeline to ${codeAgent}
 4. **Signal** - Generate prediction on latest data
 5. **Decision** - BUY/SELL/HOLD with reasoning
 
 ## Progress Visibility
-Tell Codex to add tqdm progress bars and print statements for all stages.`;
+Tell ${codeAgent} to add tqdm progress bars and print statements for all stages.`;
 }
 
-const tools = {
-  fetch_market_data: fetchMarketDataTool,
-  codex_edit: codexEditTool,
-  web_search: openai.tools.webSearch({ searchContextSize: "high" }),
-};
+function getOpenAITools() {
+  return {
+    fetch_market_data: fetchMarketDataTool,
+    codex_edit: codexEditTool,
+    web_search: openai.tools.webSearch({ searchContextSize: "high" }),
+  };
+}
 
-export async function runAgent(userPrompt: string, maxSteps = 100) {
-  const systemPrompt = getSystemPrompt();
+function getAnthropicTools() {
+  return {
+    fetch_market_data: fetchMarketDataTool,
+    claude_code_edit: claudeCodeEditTool,
+    web_search: anthropic.tools.webSearch_20250305({ maxUses: 10 }),
+  };
+}
+
+export async function runAgent(
+  userPrompt: string, 
+  maxSteps = 100,
+  provider: ModelProvider = env.MODEL_PROVIDER
+) {
+  const systemPrompt = getSystemPrompt(provider);
+  const isAnthropic = provider === "anthropic";
+  
+  const modelName = isAnthropic ? "claude-opus-4-5" : "gpt-5.1";
+  const tools = isAnthropic ? getAnthropicTools() : getOpenAITools();
   
   console.log("\n" + "=".repeat(60));
-  console.log("🧠 Model: gpt-5.1 (high reasoning)");
+  console.log(`🧠 Model: ${modelName}`);
   console.log("🤖 Prompt:", userPrompt);
   console.log("=".repeat(60) + "\n");
 
+  const model = isAnthropic 
+    ? anthropic(modelName)
+    : openai(modelName);
+
+  const providerOptions = isAnthropic
+    ? {
+        anthropic: {
+          thinking: { type: "enabled" as const, budgetTokens: 32000 },
+        },
+      }
+    : {
+        openai: {
+          reasoningEffort: "high" as const,
+        },
+      };
+
   const result = await generateText({
-    model: openai("gpt-5.1"),
+    model,
     system: systemPrompt,
     prompt: userPrompt,
     tools,
     stopWhen: stepCountIs(maxSteps),
-    providerOptions: {
-      openai: {
-        reasoningEffort: "high",
-      },
-    },
+    providerOptions,
     onStepFinish: (step) => {
       console.log(`\n--- Step done (${step.finishReason}) ---`);
       for (const tr of step.toolResults || []) {
@@ -107,10 +141,20 @@ export async function runAgent(userPrompt: string, maxSteps = 100) {
   console.log("\n📝 Response:", result.text);
   console.log("📊 Usage:", result.usage);
   
-  // Log reasoning tokens if available
-  const meta = result.providerMetadata?.openai;
-  if (meta && "reasoningTokens" in meta) {
-    console.log("🧠 Reasoning tokens:", meta.reasoningTokens);
+  // Log provider-specific metadata
+  if (isAnthropic) {
+    const meta = result.providerMetadata?.anthropic;
+    if (meta && "cacheCreationInputTokens" in meta) {
+      console.log("💾 Cache creation tokens:", meta.cacheCreationInputTokens);
+    }
+    if (result.reasoning) {
+      console.log("🧠 Reasoning:", result.reasoning.slice(0, 500) + (result.reasoning.length > 500 ? "..." : ""));
+    }
+  } else {
+    const meta = result.providerMetadata?.openai;
+    if (meta && "reasoningTokens" in meta) {
+      console.log("🧠 Reasoning tokens:", meta.reasoningTokens);
+    }
   }
   
   return result;
@@ -122,7 +166,7 @@ const prompt = process.argv.slice(2).join(" ") ||
 
 1. Search web for current NVDA news, market sentiment, any upcoming catalysts
 2. Fetch NVDA daily data from 2020-01-01 to today
-3. Delegate to Codex: "Build production ML pipeline:
+3. Delegate to ${env.MODEL_PROVIDER === "anthropic" ? "Claude Code" : "Codex"}: "Build production ML pipeline:
    - Engineer 50+ features (momentum, volatility, volume, price patterns)
    - Train XGBoost with 5-fold time series CV
    - Use tqdm for progress

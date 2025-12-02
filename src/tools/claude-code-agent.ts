@@ -1,29 +1,16 @@
 import { z } from "zod";
 import { tool } from "ai";
-import { Codex } from "@openai/codex-sdk";
+import { query } from "@anthropic-ai/claude-agent-sdk";
 import type { CodexEditResult } from "../types/index.js";
 import { resolve } from "path";
-import { env } from "../config/env.js";
 
-const CodexEditSchema = z.object({
+const ClaudeCodeEditSchema = z.object({
   taskDescription: z
     .string()
     .describe("Detailed ML/coding task. Be specific: model architecture, features, training params, output format."),
 });
 
-let codexInstance: Codex | null = null;
-
-function getCodex(): Codex {
-  if (!codexInstance) {
-    // SDK sets CODEX_API_KEY from apiKey option for the CLI subprocess
-    codexInstance = new Codex({
-      apiKey: env.OPENAI_API_KEY,
-    });
-  }
-  return codexInstance;
-}
-
-const CODEX_SYSTEM_CONTEXT = `You are a quant ML engineer with GPU compute available.
+const CLAUDE_CODE_SYSTEM = `You are a quant ML engineer with GPU compute available.
 
 WORKSPACE: quant-lab/
 ├── notebooks/research.ipynb  <-- ALL CODE GOES HERE
@@ -94,65 +81,101 @@ joblib.dump(model, "./models/model_v1.pkl")
 print("✅ Complete!")
 \`\`\``;
 
-export const codexEditTool = tool({
-  description: `Delegate ML/coding to Codex. GPU available for heavy compute.
+export const claudeCodeEditTool = tool({
+  description: `Delegate ML/coding to Claude Code. GPU available for heavy compute.
 
 Examples:
 - "Train XGBoost with 5-fold CV, show progress with tqdm"
 - "Build PyTorch LSTM for 60-day sequences, train 100 epochs"
 - "Run Optuna optimization, 200 trials"
 - "Generate today's signal from trained model"`,
-  inputSchema: CodexEditSchema,
+  inputSchema: ClaudeCodeEditSchema,
   execute: async ({ taskDescription }): Promise<CodexEditResult> => {
     const workingDirectory = resolve(process.cwd(), "quant-lab");
     
-    console.log(`\n🤖 Codex starting...`);
+    console.log(`\n🟣 Claude Code starting...`);
     console.log(`📝 ${taskDescription.slice(0, 300)}${taskDescription.length > 300 ? "..." : ""}`);
 
     try {
-      const codex = getCodex();
-      const thread = codex.startThread({
-        workingDirectory,
-        skipGitRepoCheck: true,
-      });
-
-      const fullPrompt = `${CODEX_SYSTEM_CONTEXT}
-
----
-TASK:
-${taskDescription}
+      const fullPrompt = `${taskDescription}
 
 Remember: Add to notebooks/research.ipynb. Use tqdm for progress. Print stage updates.`;
 
-      const turn = await thread.run(fullPrompt);
-
       const logs: string[] = [];
       const changedFiles: string[] = [];
+      let finalResult = "";
+      let sessionId = "";
 
-      for (const item of turn.items) {
-        if (item.type === "agent_message" && "content" in item) {
-          logs.push(String(item.content));
+      const result = query({
+        prompt: fullPrompt,
+        options: {
+          cwd: workingDirectory,
+          systemPrompt: CLAUDE_CODE_SYSTEM,
+          permissionMode: "bypassPermissions",
+          model: "claude-opus-4-5",
+          allowedTools: [
+            "Read",
+            "Write",
+            "Edit",
+            "Bash",
+            "Glob",
+            "Grep",
+            "NotebookEdit",
+          ],
+        },
+      });
+
+      for await (const message of result) {
+        if (message.type === "system" && message.subtype === "init") {
+          sessionId = message.session_id;
+          console.log(`🔗 Session: ${sessionId}`);
         }
-        if (item.type === "file_change" && "path" in item) {
-          changedFiles.push(String(item.path));
+
+        if (message.type === "assistant") {
+          const content = message.message.content;
+          for (const block of content) {
+            if (block.type === "text") {
+              logs.push(block.text);
+            }
+            if (block.type === "tool_use") {
+              logs.push(`🔧 Tool: ${block.name}`);
+              
+              // Track file changes
+              if (["Write", "Edit", "NotebookEdit"].includes(block.name)) {
+                const input = block.input as Record<string, unknown>;
+                const filePath = (input.file_path || input.notebook_path || input.path) as string | undefined;
+                if (filePath && !changedFiles.includes(filePath)) {
+                  changedFiles.push(filePath);
+                }
+              }
+            }
+          }
         }
-        if (item.type === "command_execution" && "command" in item) {
-          logs.push(`$ ${item.command}`);
+
+        if (message.type === "result") {
+          if (message.subtype === "success") {
+            finalResult = message.result;
+            console.log(`✅ Claude Code done. Cost: $${message.total_cost_usd.toFixed(4)}`);
+            console.log(`📊 Turns: ${message.num_turns}, Duration: ${(message.duration_ms / 1000).toFixed(1)}s`);
+          } else {
+            console.log(`⚠️  Claude Code finished with: ${message.subtype}`);
+          }
         }
       }
 
-      console.log(`✅ Codex done. Files: ${changedFiles.length > 0 ? changedFiles.join(", ") : "none"}`);
+      console.log(`📁 Files: ${changedFiles.length > 0 ? changedFiles.join(", ") : "none"}`);
       
       return {
-        summary: turn.finalResponse || "Completed",
+        summary: finalResult || "Completed",
         changedFiles,
         logs,
         success: true,
       };
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
-      console.error(`❌ Codex error: ${msg}`);
+      console.error(`❌ Claude Code error: ${msg}`);
       return { summary: `Failed: ${msg}`, changedFiles: [], logs: [msg], success: false };
     }
   },
 });
+
