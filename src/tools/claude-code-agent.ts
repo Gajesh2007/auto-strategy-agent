@@ -1,7 +1,6 @@
 import { z } from "zod";
 import { tool } from "ai";
 import { query } from "@anthropic-ai/claude-agent-sdk";
-import type { CodexEditResult } from "../types/index.js";
 import { resolve } from "path";
 
 const ClaudeCodeEditSchema = z.object({
@@ -90,7 +89,7 @@ Examples:
 - "Run Optuna optimization, 200 trials"
 - "Generate today's signal from trained model"`,
   inputSchema: ClaudeCodeEditSchema,
-  execute: async ({ taskDescription }): Promise<CodexEditResult> => {
+  execute: async ({ taskDescription }): Promise<string> => {
     const workingDirectory = resolve(process.cwd(), "quant-lab");
     
     console.log(`\n🟣 Claude Code starting...`);
@@ -101,10 +100,11 @@ Examples:
 
 Remember: Add to notebooks/research.ipynb. Use tqdm for progress. Print stage updates.`;
 
-      const logs: string[] = [];
       const changedFiles: string[] = [];
       let finalResult = "";
-      let sessionId = "";
+      let cost = 0;
+      let turns = 0;
+      let durationSec = 0;
 
       const result = query({
         prompt: fullPrompt,
@@ -127,21 +127,13 @@ Remember: Add to notebooks/research.ipynb. Use tqdm for progress. Print stage up
 
       for await (const message of result) {
         if (message.type === "system" && message.subtype === "init") {
-          sessionId = message.session_id;
-          console.log(`🔗 Session: ${sessionId}`);
+          console.log(`🔗 Session: ${message.session_id}`);
         }
 
         if (message.type === "assistant") {
           const content = message.message.content;
           for (const block of content) {
-            // Only capture text content, ignore tool_use blocks to prevent ID leakage
-            if (block.type === "text" && block.text) {
-              // Strip any tool IDs that might be in the text
-              const cleanText = block.text.replace(/srvtoolu_[a-zA-Z0-9]+/g, "[tool]");
-              logs.push(cleanText);
-            }
             if (block.type === "tool_use") {
-              // Track file changes without storing tool IDs
               if (["Write", "Edit", "NotebookEdit"].includes(block.name)) {
                 const input = block.input as Record<string, unknown>;
                 const filePath = (input.file_path || input.notebook_path || input.path) as string | undefined;
@@ -155,31 +147,39 @@ Remember: Add to notebooks/research.ipynb. Use tqdm for progress. Print stage up
 
         if (message.type === "result") {
           if (message.subtype === "success") {
-            // Clean the result of any internal tool IDs
-            finalResult = message.result.replace(/srvtoolu_[a-zA-Z0-9]+/g, "[internal-tool]");
-            console.log(`✅ Claude Code done. Cost: $${message.total_cost_usd.toFixed(4)}`);
-            console.log(`📊 Turns: ${message.num_turns}, Duration: ${(message.duration_ms / 1000).toFixed(1)}s`);
+            finalResult = message.result;
+            cost = message.total_cost_usd;
+            turns = message.num_turns;
+            durationSec = message.duration_ms / 1000;
+            console.log(`✅ Claude Code done. Cost: $${cost.toFixed(4)}`);
+            console.log(`📊 Turns: ${turns}, Duration: ${durationSec.toFixed(1)}s`);
           } else {
             console.log(`⚠️  Claude Code finished with: ${message.subtype}`);
+            finalResult = `Completed with status: ${message.subtype}`;
           }
         }
       }
 
       console.log(`📁 Files: ${changedFiles.length > 0 ? changedFiles.join(", ") : "none"}`);
       
-      // Return clean result without any tool IDs that could confuse the outer agent
-      const cleanLogs = logs.map(log => log.replace(/toolu_[a-zA-Z0-9]+/g, "[tool]"));
+      // Return a plain string - strip ALL potential tool IDs to prevent AI SDK confusion
+      const cleanResult = (finalResult || "Task completed")
+        .replace(/srvtoolu_[a-zA-Z0-9_-]+/g, "")
+        .replace(/toolu_[a-zA-Z0-9_-]+/g, "")
+        .replace(/tool_use_id[^,}]*/g, "")
+        .trim();
       
-      return {
-        summary: finalResult || "Completed successfully",
-        changedFiles,
-        logs: cleanLogs,
-        success: true,
-      };
+      return `Claude Code completed successfully.
+
+Files modified: ${changedFiles.length > 0 ? changedFiles.join(", ") : "none"}
+
+Summary: ${cleanResult}
+
+Stats: Cost $${cost.toFixed(4)}, ${turns} turns, ${durationSec.toFixed(1)}s`;
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
       console.error(`❌ Claude Code error: ${msg}`);
-      return { summary: `Failed: ${msg}`, changedFiles: [], logs: [msg], success: false };
+      return `Claude Code failed: ${msg}`;
     }
   },
 });
