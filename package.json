@@ -1,0 +1,36 @@
+{
+  "name": "auto-strategy-agent",
+  "version": "1.0.0",
+  "description": "Self-iterating quant research agent using AI SDK + OpenAI + Codex",
+  "type": "module",
+  "main": "dist/index.js",
+  "scripts": {
+    "dev": "tsx src/index.ts",
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "agent": "tsx src/index.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "keywords": [
+    "quant",
+    "ml",
+    "trading",
+    "ai",
+    "agent"
+  ],
+  "author": "",
+  "license": "ISC",
+  "packageManager": "pnpm@9.12.3+sha512.cce0f9de9c5a7c95bef944169cc5dfe8741abfb145078c0d508b868056848a87c81e626246cb60967cbd7fd29a6c062ef73ff840d96b3c86c40ac92cf4a813ee",
+  "dependencies": {
+    "@ai-sdk/openai": "^2.0.75",
+    "@openai/codex-sdk": "^0.63.0",
+    "ai": "^5.0.105",
+    "dotenv": "^17.2.3",
+    "tsx": "^4.21.0",
+    "zod": "3"
+  },
+  "devDependencies": {
+    "@types/node": "^24.10.1",
+    "typescript": "^5.9.3"
+  }
+}

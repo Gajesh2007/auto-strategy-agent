@@ -1,0 +1,33 @@
+[tool.poetry]
+name = "quant-lab"
+version = "0.1.0"
+description = "ML-based quantitative trading research lab"
+authors = ["Auto Strategy Agent"]
+package-mode = false
+
+[tool.poetry.dependencies]
+python = "^3.11"
+pandas = "^2.2.0"
+numpy = "^1.26.0"
+scikit-learn = "^1.5.0"
+xgboost = "^2.1.0"
+lightgbm = "^4.5.0"
+ta = "^0.11.0"
+yfinance = "^0.2.40"
+ipykernel = "^6.29.0"
+jupyter = "^1.1.0"
+tqdm = "^4.66.0"
+joblib = "^1.4.0"
+optuna = "^3.6.0"
+plotly = "^5.22.0"
+catboost = "^1.2.0"
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^8.3.0"
+black = "^24.8.0"
+ruff = "^0.6.0"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
+
